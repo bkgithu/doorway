@@ -9,24 +9,17 @@
 
     html, body {
       width: 100%;
+      height: 100%;
       background: #F2F0EF;
-      overflow-x: hidden;
-    }
-
-    /* ── Scroll sequence ── */
-    #doorway-sequence {
-      position: relative;
-      height: 500vh;
-      width: 100%;
-      background: #F2F0EF;
-    }
-
-    #doorway-sticky {
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      width: 100%;
       overflow: hidden;
+    }
+
+    #doorway-wrap {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      overflow: hidden;
+      background: #F2F0EF;
     }
 
     #doorway-canvas {
@@ -37,98 +30,97 @@
       display: block;
     }
 
-    /* Fade-out overlay back to background colour */
+    /* Fade-in overlay that reveals a white/bg flush at the end */
     #doorway-reveal {
       position: absolute;
       inset: 0;
       background: #F2F0EF;
       opacity: 0;
       pointer-events: none;
+      transition: none;
     }
 
-    /* ── Content that appears after the animation ── */
-    #after-content {
-      position: relative;
-      z-index: 2;
-      background: #F2F0EF;
-      min-height: 100vh;
+    /* Loading indicator */
+    #loading {
+      position: absolute;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 80px 40px;
+      background: #F2F0EF;
+      z-index: 10;
     }
 
-    #after-content h1 {
-      font-family: Georgia, 'Times New Roman', serif;
-      font-size: clamp(2rem, 5vw, 4rem);
-      font-weight: 400;
-      color: #1a1a1a;
-      letter-spacing: 0.02em;
-      text-align: center;
+    #loading-bar-wrap {
+      width: 180px;
+      height: 2px;
+      background: rgba(0,0,0,0.12);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #loading-bar {
+      height: 100%;
+      width: 0%;
+      background: #1a1a1a;
+      border-radius: 2px;
+      transition: width 0.2s ease;
     }
   </style>
 </head>
 <body>
 
-  <div id="doorway-sequence">
-    <div id="doorway-sticky">
-      <canvas id="doorway-canvas"></canvas>
-      <div id="doorway-reveal"></div>
+  <div id="doorway-wrap">
+    <canvas id="doorway-canvas"></canvas>
+    <div id="doorway-reveal"></div>
+    <div id="loading">
+      <div id="loading-bar-wrap">
+        <div id="loading-bar"></div>
+      </div>
     </div>
-  </div>
-
-  <!-- Replace this with whatever content follows your animation -->
-  <div id="after-content">
-    <h1>Your content goes here</h1>
   </div>
 
   <script>
     (function () {
-      const section  = document.getElementById('doorway-sequence');
-      const canvas   = document.getElementById('doorway-canvas');
-      const reveal   = document.getElementById('doorway-reveal');
-      const ctx      = canvas.getContext('2d');
+      const wrap        = document.getElementById('doorway-wrap');
+      const canvas      = document.getElementById('doorway-canvas');
+      const reveal      = document.getElementById('doorway-reveal');
+      const loading     = document.getElementById('loading');
+      const loadingBar  = document.getElementById('loading-bar');
+      const ctx         = canvas.getContext('2d');
 
-      const frameCount = 37;
-      const BASE_URL   = 'https://res.cloudinary.com/df94hakfq/image/upload/q_auto,f_auto,w_1600/samples/doorway/';
+      /* ─── Config ─────────────────────────────────── */
+      const FRAME_COUNT   = 37;
+      const BASE_URL      = 'https://res.cloudinary.com/df94hakfq/image/upload/q_auto,f_auto,w_1600/samples/doorway/';
+      const PLAY_DURATION = 2800;   // ms for full animation (increase to slow down)
+      const REPLAY        = true;   // replay every time the section re-enters view
 
-      const images = [];
-      let currentIndex = 0;
-      let started      = false;
-      let rafPending   = false;
+      /* ─── State ──────────────────────────────────── */
+      const images      = [];
+      let loadedCount   = 0;
+      let isReady       = false;
+      let isPlaying     = false;
+      let playStart     = null;
+      let rafId         = null;
+      let hasPlayedOnce = false;
 
-      /* ── Helpers ── */
-      function frameUrl(i) {
-        return BASE_URL + 'frame_' + String(i).padStart(3, '0') + '.jpg';
-      }
-
-      function clamp(min, max, v) {
-        return Math.min(max, Math.max(min, v));
-      }
-
-      /* ── Canvas sizing ── */
+      /* ─── Canvas sizing ──────────────────────────── */
       function setCanvasSize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         canvas.width  = window.innerWidth  * dpr;
         canvas.height = window.innerHeight * dpr;
-        // reset transform so draws don't stack
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
 
-      /* ── Draw a frame ── */
+      /* ─── Draw a frame ───────────────────────────── */
       function draw(index) {
         const img = images[index];
         if (!img || !img.complete || !img.naturalWidth) return;
 
-        const cw = canvas.width  / (window.devicePixelRatio <= 2 ? Math.min(window.devicePixelRatio, 2) : 1);
-        const ch = canvas.height / (window.devicePixelRatio <= 2 ? Math.min(window.devicePixelRatio, 2) : 1);
-
-        // Use CSS pixel dimensions for drawing (ctx is already scaled by dpr via setTransform)
         const vw = window.innerWidth;
         const vh = window.innerHeight;
         const iw = img.naturalWidth;
         const ih = img.naturalHeight;
-
         const scale = Math.max(vw / iw, vh / ih);
         const w = iw * scale;
         const h = ih * scale;
@@ -139,82 +131,116 @@
         ctx.drawImage(img, x, y, w, h);
       }
 
-      /* ── Scroll progress (0 → 1) ── */
-      function getProgress() {
-        const scrollY = window.scrollY;
-        const top     = section.offsetTop;
-        const total   = section.offsetHeight - window.innerHeight;
-        const passed  = clamp(0, total, scrollY - top);
-        return total > 0 ? passed / total : 0;
+      /* ─── Easing (ease-in-out cubic) ─────────────── */
+      function easeInOut(t) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       }
 
-      /* ── Update on scroll ── */
-      function update() {
-        rafPending = false;
-        if (!started) return;
+      /* ─── Play animation ─────────────────────────── */
+      function playAnimation() {
+        if (isPlaying) return;
+        isPlaying = true;
+        playStart = performance.now();
 
-        const progress = getProgress();
+        function tick(now) {
+          const elapsed  = now - playStart;
+          const rawT     = Math.min(elapsed / PLAY_DURATION, 1);
+          const t        = easeInOut(rawT);
 
-        // Frames play from 0 → 78% of scroll
-        const index = Math.min(
-          frameCount - 1,
-          Math.round(clamp(0, 1, progress / 0.78) * (frameCount - 1))
-        );
-        currentIndex = index;
-        draw(currentIndex);
+          // Frames advance through first 90% of animation
+          const frameT   = Math.min(t / 0.9, 1);
+          const index    = Math.min(FRAME_COUNT - 1, Math.round(frameT * (FRAME_COUNT - 1)));
+          draw(index);
 
-        // Fade-to-background from 80% → 100% of scroll
-        const revealProgress = clamp(0, 1, (progress - 0.80) / 0.20);
-        reveal.style.opacity = revealProgress;
-      }
+          // Fade to background colour in the last 20%
+          const fadeT    = Math.max(0, (t - 0.80) / 0.20);
+          reveal.style.opacity = fadeT;
 
-      function onScroll() {
-        if (!rafPending) {
-          rafPending = true;
-          requestAnimationFrame(update);
+          if (rawT < 1) {
+            rafId = requestAnimationFrame(tick);
+          } else {
+            isPlaying     = false;
+            hasPlayedOnce = true;
+          }
         }
+
+        rafId = requestAnimationFrame(tick);
       }
 
-      /* ── Load frames ── */
-      function initImages() {
-        let loaded = 0;
-        for (let i = 1; i <= frameCount; i++) {
+      /* ─── Load frames ────────────────────────────── */
+      function loadImages() {
+        for (let i = 1; i <= FRAME_COUNT; i++) {
           const img = new Image();
+          const url = BASE_URL + 'frame_' + String(i).padStart(3, '0') + '.jpg';
 
           img.onload = function () {
-            loaded++;
-            // Start as soon as frame 1 is ready
-            if (!started && loaded >= 1) {
-              started = true;
-              requestAnimationFrame(function () {
-                setCanvasSize();
-                draw(0);
-                update();
-              });
+            loadedCount++;
+            const pct = (loadedCount / FRAME_COUNT) * 100;
+            loadingBar.style.width = pct + '%';
+
+            // Show first frame as soon as it loads
+            if (loadedCount === 1) {
+              setCanvasSize();
+              draw(0);
+            }
+
+            // Ready when enough frames are loaded to play smoothly (≥50%)
+            if (!isReady && loadedCount >= Math.ceil(FRAME_COUNT * 0.5)) {
+              isReady = true;
+              loading.style.opacity = '0';
+              loading.style.transition = 'opacity 0.4s';
+              setTimeout(function () { loading.style.display = 'none'; }, 400);
+              // If observer already fired before images were ready, play now
+              if (shouldPlay) playAnimation();
             }
           };
 
           img.onerror = function () {
-            console.warn('Failed to load:', frameUrl(i));
+            console.warn('Could not load frame:', url);
+            loadedCount++;
           };
 
-          img.src = frameUrl(i);
+          img.src = url;
           images.push(img);
         }
       }
 
-      /* ── Event listeners ── */
-      window.addEventListener('scroll', onScroll, { passive: true });
+      /* ─── IntersectionObserver ───────────────────── */
+      let shouldPlay = false;
 
+      const observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            // Reset reveal overlay so animation is visible
+            reveal.style.opacity = 0;
+
+            if (!REPLAY && hasPlayedOnce) return;
+
+            shouldPlay = true;
+            if (isReady) {
+              // Small delay so user sees the first frame before zoom starts
+              setTimeout(playAnimation, 300);
+            }
+          } else {
+            // Cancel any in-progress play when scrolled away
+            if (rafId) cancelAnimationFrame(rafId);
+            isPlaying = false;
+          }
+        });
+      }, { threshold: 0.4 }); // fires when 40% of the element is visible
+
+      observer.observe(wrap);
+
+      /* ─── Resize ─────────────────────────────────── */
       window.addEventListener('resize', function () {
         setCanvasSize();
-        draw(currentIndex);
-        update();
+        draw(0);
       });
 
-      /* ── Kick off ── */
+      /* ─── Init ───────────────────────────────────── */
       setCanvasSize();
-      initImages();
+      loadImages();
+
     })();
   </script>
 
